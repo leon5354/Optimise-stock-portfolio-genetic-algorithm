@@ -1,0 +1,371 @@
+---
+title: "ECF GA Model"
+output: pdf_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Loading Package, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+library(quantmod)
+require(tidyverse)
+require(dplyr)
+require(GA)
+```
+Then I would define 10 stocks, and transfer the daily return of stocks to a time series in data frame. The reasons behind the selection is I try to capture different stocks from different board, there are indicator related exchange traded funds, technology related, retails, also block-chain related stocks.
+```{r Set up Data, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+myStocks <- c("QQQ", "VOO", "AAPL","HRB","AMZN","ETHE","GBTC","JWN","ZM","NVDA")
+getSymbols(myStocks, src="yahoo", from="2020-01-01", to="2021-01-01")
+a = lapply(myStocks, function(sym) dailyReturn(na.omit(getSymbols(sym, from="2020-01-01", to="2021-01-01", auto.assign=FALSE))))
+myRetData = do.call(merge.xts,a)
+colnames(myRetData) = myStocks
+```
+As the GA package is not supporting multiple objectives, when we have to consider both risk and return, Sharpe ratio can be applied to the function because it is a ratio that generated from the risk and return. The risk free rate is set to be 0%.
+```{r Function 1, echo=TRUE}
+sharpe = function(x) {
+  return (mean(x*myRetData)/sqrt(t(x) %*% cov(myRetData)%*% x))
+}
+```
+Also, it is necessary to let the fitness function return a summed weight that not more than total 1.
+```{r Function 2, echo=TRUE}
+all_weight = function(x) {
+  weight_constraint = (sum(x)-1)**2   # sum of weight (x) should =< 1
+  for (i in 1:length(x)) {
+    weight_constraint = weight_constraint + 
+      max(c(0,x[i]-1))**2 + 
+      max(c(0,-x[i]))**2    
+    }
+ return (weight_constraint)
+  }
+```
+A fitness function that combined the Sharpe value and the weight of different stocks in the portfolio is formed.
+```{r Obj Function, echo=TRUE}
+obj = function(x) {
+  # We want the maximum Sharpe ratio, so we multiply it -1
+  return (-sharpe(x)+100*all_weight(x))
+}
+```
+The fitness function would be be used in the GA function.
+```{r Ga functon 1, include=FALSE}
+ga_res = ga(type="real-valued", function(x){-obj(x)}, lower = rep(0,ncol(myRetData)), upper = rep(1,ncol(myRetData)), maxiter = 50000, run=1500, monitor=TRUE,seed=1)
+```
+According to the he best solution is a one with 0.02159169 Fitness value.
+```{r Solution 1, echo=TRUE}
+sol = as.vector(summary(ga_res)$solution)
+opt_port=cbind(names(myRetData),sol)
+solution=summary(ga_res)
+solution$fitness
+
+portfolio_returns = function(x) {
+  port.returns = 0
+  for (i in 1:length(x)) {
+    port.returns = port.returns + myRetData[,i] * x[i]
+  }
+   return (port.returns)
+}
+```
+To check how the selected portfolio working, the portfolio return can be plotted against the other stocks in the portfolio. The bold black line is our portfolio return, as it is measured by the balance between the risk and return in form of Sharpe ratio, it would not be the safest or most profitable, however it will be relatively stable and a decent performer. This is just for proving the tendency of the GA formula and perference of the Sharpe Ratio.
+```{r Chart, include=FALSE}
+or = portfolio_returns(sol)
+plot(cumsum(or),type="l",lwd=5)
+lines(cumsum(myRetData[,1]),col="blue")
+lines(cumsum(myRetData[,2]),col="red")
+lines(cumsum(myRetData[,3]),col="green")
+lines(cumsum(myRetData[,4]),col="violet")
+lines(cumsum(myRetData[,5]),col="peru")
+lines(cumsum(myRetData[,6]),col="pink")
+lines(cumsum(myRetData[,7]),col="darkorange")
+lines(cumsum(myRetData[,8]),col="gray")
+lines(cumsum(myRetData[,9]),col="darksalmon")
+```
+```{r Chart 2, echo=TRUE}
+lines(cumsum(myRetData[,10]),col="deepskyblue")
+legend(0,1.5,legend=c("Weighted portfolio",names(myRetData)),
+       col = c("black","blue","red","green","violet","peru","pink","darkorange","gray","darksalmon","deepskyblue"),lty=1)
+```
+Set a function that can return different performance parameters of a stock in the data set and it will be used to compare the performance of our portfolio weight to other weighting in the later part of the assignment.
+```{r Function 3, echo=TRUE}
+#sharpe ratio
+allratio = function(x)
+{
+  port_returns = mean(x * myRetData)
+  port_risk <- sqrt(t(x) %*% (cov(myRetData)%*% x))
+  sharpe_ratio = port_returns/port_risk
+  result = c("sharpe" = sharpe_ratio, "Porfolio Risk"=port_risk,"porfolio Return"=port_returns)
+  print(result)
+}
+```
+According from the optimized portfolio decided by the GA,the NVDA, ZM,VOO,QQQ,JWN seems taking a significant portion of the portfolio.
+```{r Sol 2, echo=FALSE}
+opt_port_2020=data.frame(cbind(names(myRetData),sol))
+opt_port_2020
+```
+Now, I would apply the portfolio weight from decided by the GA from the 2020 to 2021 period to the 2021-2022 period to check the performance in the "future".
+```{r Data set 2, include=FALSE}
+myStocks_future <- c("QQQ", "VOO", "AAPL","HRB","AMZN","ETHE","GBTC","JWN","ZM","NVDA")
+getSymbols(myStocks_future, src="yahoo", from="2021-01-01", to="2022-01-01")
+
+a = lapply(myStocks_future, function(sym) dailyReturn(na.omit(getSymbols(sym, from="2021-01-01", to="2022-01-01", auto.assign=FALSE))))
+myRetData_future = do.call(merge.xts,a)
+colnames(myRetData_future) = myStocks
+```
+Bringing along the even weighting, optimized portfolio decided by the GA with the 2020-2021 stocks date set and some random decided portfolio and to check thier performance.
+```{r Set up 1, echo=TRUE}
+#portfolio weight
+weight = c(0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1)
+best_weight_2020=data.frame(ga_res@solution)
+#random weight
+ran_weight1=c(0.4,0.0,0.0,0.0,0.0,0.1,0.1,0.1,0.1,0.2)
+ran_weight2=c(0.8,0.05,0.05,0.025,0.025,0.025,0.025,0.0,0.0,0.0)
+ran_weight3=c(0,0,0,0,0,1,0,0,0,0)
+```
+```{r echo=TRUE}
+#all ratio
+allratio_future = function(x)
+{
+  port_returns = mean(x * myRetData_future)
+  port_risk <- sqrt(t(x) %*% (cov(myRetData_future)%*%x))
+  sharpe_ratio = port_returns/port_risk
+  result = c("sharpe" = sharpe_ratio, "Porfolio Risk"=port_risk,"porfolio Return"=port_returns)
+  print(result)
+}
+```
+Based on the function we set before to check the performance, we can see among some random picked or a balanced portfolio, the GA decided weight is able to achieve the highest Sharpe ratio in the 2020-2021, it will not be the one with the highest return nor the safest option, as the GA function is designed aiming for best balance of the Sharpe ratio.
+
+When the optimized portfolio is brought to the "future", obviously its performance would not remain the same, and its performance comparing to other portfolio is not outstanding, as the stocks inside the portfolio would not remain the same throughout the year but it still able to maintain a Sharpe ratio that not the worst.
+```{r Result 1, echo=TRUE}
+allratio(as.numeric(best_weight_2020[1,]))
+allratio(weight)
+allratio(ran_weight1)
+allratio(ran_weight2)
+allratio(ran_weight3)
+allratio_future(as.numeric(best_weight_2020[1,]))
+allratio_future(weight)
+allratio_future(ran_weight1)
+allratio_future(ran_weight2)
+allratio_future(ran_weight3)
+```
+It is also able to fine tune the fitness function to adjust our objective, for example it can be set to maximize the return or minimize the risk and compare it with the optimized portfolio.
+
+In this case, the follow methods are used, one focusing on the best return, one focusing on minimizing risk, one have certain higher preference to lower risk, and one has certain higher preference to return, one prefer .
+
+First a fitness function that focus on return.
+```{r Max return, echo=TRUE}
+#Max return 2020-2021
+return_max = function(x) {
+  return (mean(x*myRetData))
+}
+obj_return_max = function(x) {
+  return (-return_max(x)+100*all_weight(x))
+}
+```
+```{r GA , include=FALSE}
+ga_res_return_max = ga(type="real-valued", function(x){-obj_return_max(x)}, lower = rep(0,ncol(myRetData)), upper = rep(1,ncol(myRetData)), maxiter = 50000, run=1500, monitor=TRUE,seed=1)
+```
+Secondly, I will focus on minimize the risk of the fitness value outcome, as GA package would only to seek maximized outcome, so to minimize the risk, i would need to add a minus into the objective function.
+```{r Min Risk, echo=TRUE}
+#Max Return
+solution_return_max=summary(ga_res_return_max)
+#no risky
+return_least_risk = function(x) {
+  return (sqrt(t(x) %*% cov(myRetData)%*% x)) 
+}
+#remove the - here because min risk
+obj_return_least_risk = function(x) {
+  return (return_least_risk(x)+100*all_weight(x))
+}
+```
+```{r GA new, include=FALSE}
+#- the riskas we want min risk as GA would aim for the max
+ga_res_least_risk = ga(type="real-valued", function(x){-obj_return_least_risk(x)}, lower = rep(0,ncol(myRetData)), upper = rep(1,ncol(myRetData)),maxiter = 50000, run=1500, monitor=TRUE,seed=1)
+```
+```{r Solution again, echo=FALSE}
+solution_least_risk=summary(ga_res_least_risk)
+```
+Finally for more focusing on return and more focusing on less risk, I would transform the scale of the relative factors in the function to make it more or less significant in the outcome.
+```{r Alternatives, echo=TRUE}
+#more return
+sharpe_more_return = function(x) {
+  risk = sqrt(t(x) %*% cov(myRetData)%*% x)
+  return (mean(x*myRetData)/(risk*0.5))
+}
+obj_more_return = function(x) {
+  return (-sharpe_more_return(x)+100*all_weight(x))
+}
+```
+```{r GA alter, include=FALSE}
+ga_res_more_return = ga(type="real-valued", function(x){-obj_more_return(x)}, lower = rep(0,ncol(myRetData)), upper = rep(1,ncol(myRetData)),maxiter = 50000, run=1500, monitor=TRUE,seed=1)
+```
+```{r Alternatives 2, echo=TRUE}
+#a little less risky
+sharpe_less_risky = function(x) {
+  risk = sqrt(t(x) %*% cov(myRetData)%*% x)
+  return (mean(x*myRetData)/(risk*1.5))
+}
+obj_less_risky = function(x) {
+  return (-sharpe_less_risky(x)+100*all_weight(x))
+}
+```
+```{r GA alter 2, include=FALSE}
+ga_res_less_risky = ga(type="real-valued", function(x){-obj_less_risky(x)}, lower = rep(0,ncol(myRetData)), upper = rep(1,ncol(myRetData)),maxiter = 50000, run=1500, monitor=TRUE,seed=1)
+```
+We can see the portfolio with different purposes are quite different. It seems NVDA is one of the stocks that has the best performance during 2020-2021, as it listed top in the low risk, highest return and best best Sharpe Ratio portfolio. But the weight to the other stocks is qutie different.
+```{r Show all, echo=TRUE}
+sol1 = as.vector(summary(ga_res_least_risk)$solution)
+sol2 = as.vector(summary(ga_res_return_max)$solution)
+sol3 = as.vector(summary(ga_res_less_risky)$solution)
+sol4 = as.vector(summary(ga_res_more_return)$solution)
+max_return_port_2020=data.frame(cbind(names(myRetData),sol1))
+min_risk_port_2020=data.frame(cbind(names(myRetData),sol2))
+more_return_port_2020=data.frame(cbind(names(myRetData),sol3))
+less_risk_port_2020=data.frame(cbind(names(myRetData),sol4))
+max_return_port_2020
+min_risk_port_2020
+more_return_port_2020
+less_risk_port_2020
+```
+GA uses the data from 2020-2021 period to make decision, the result is very straight forward, when we use a function focus on return, the decision does provide the highest return, and decrease while we more focus on less risk. When it more focus on minimize the risk in the objective function, the risk seems to be decreasing according to our focus to take less risk in the objective function.
+Comparing the different proportion of portfolio in the "future", the performance in term of return seems become very inconsistent, and it is very hard to guarantee the return in a high standard, as the performance of different share is different.
+However, when we look at the performance in aiming for lower risk, it seems more stable throughout the future and the past, as what captured into the risk parameter as lower risk is the stocks with less fluctuation, so it may tend to have a more stable performance.
+```{r All Ratio new, echo=TRUE}
+max_return_port_2020=data.frame(ga_res_return_max@solution)
+min_risk_port_2020=data.frame(ga_res_least_risk@solution)
+less_risky_port_2020=data.frame(ga_res_less_risky@solution)
+more_return_port_2020=data.frame(ga_res_more_return@solution)
+
+allratio(as.numeric(max_return_port_2020[1,]))
+allratio(as.numeric(more_return_port_2020[1,]))
+allratio(as.numeric(less_risky_port_2020[1,]))
+allratio(as.numeric(min_risk_port_2020[1,]))
+allratio(as.numeric(best_weight_2020[1,]))
+allratio(weight)
+allratio(ran_weight1)
+allratio(ran_weight2)
+allratio(ran_weight3)
+#Future
+allratio_future(as.numeric(max_return_port_2020[1,]))
+allratio_future(as.numeric(more_return_port_2020[1,]))
+allratio_future(as.numeric(less_risky_port_2020[1,]))
+allratio_future(as.numeric(min_risk_port_2020[1,]))
+allratio_future(as.numeric(best_weight_2020[1,]))
+allratio_future(weight)
+allratio_future(ran_weight1)
+allratio_future(ran_weight2)
+allratio_future(ran_weight3)
+```
+Part 2
+First we pick 50 stocks, then using GA the pick the 10 out of 50 among all those stocks, as we try to bring the number of the portfolio down. The criteria for making decision is to find out the stocks with best quality in term of Sharpe ratio, and then use those 10 stocks to run another GA to decide the best weighting.
+And the stocks covered different board and industries, in order to bring a less biased and better coverage to the market.
+```{r Set Up 50, include=FALSE}
+myStocks_fif <- c("QQQ", "VOO", "AAPL","HRB","AMZN","ETHE","GBTC","JWN","ZM","NVDA","AMD","TSM","PFE","ARKK","DIS","DISCA","SNAP","PYPL","GOOG","SQ","MELI","SHOP","SPCE","IBM","MSFT","COKE","SIG","UPS","VFF","CRM","AMC","SQQQ","TQQQ","EA","ISRG","NKE","MANU","NFLX","ROKU","TSLA","AXON","MCD","ORCL","QCOM","TEAM","WMT","DAL","RIOT","M","MRNA")
+
+getSymbols(myStocks_fif, src="yahoo", from="2020-01-01", to="2021-01-01")
+#get data into data frame and transfer to timeseries
+b = lapply(myStocks_fif, function(sym) dailyReturn(na.omit(getSymbols(sym, from="2020-01-01", to="2021-01-01", auto.assign=FALSE))))
+myRetData_fif = do.call(merge.xts,b)
+colnames(myRetData_fif) = myStocks_fif
+```
+Find out the Sharpe ratio of the stocks.
+```{r Set up 50 2, echo=TRUE, message=FALSE, warning=FALSE}
+weight_fif=as.numeric(rep(1, 50))
+mean_return_by_stocks = colSums(myRetData_fif)/253
+fif_risk <- sqrt(t(weight_fif) %*% cov(myRetData_fif)%*% weight_fif)
+sharpe_ratio_of_fif=c(mean_return_by_stocks/fif_risk)
+sharpe_ratio_of_fif=cbind(names(myRetData_fif),sharpe_ratio_of_fif)
+```
+Set a GA that would find the best out of the ten stocks.
+```{r Function 50, echo=TRUE}
+stocks_backpack <- data.frame(item = c("QQQ", "VOO", "AAPL","HRB","AMZN","ETHE","GBTC","JWN","ZM","NVDA",
+ "AMD","TSM","PFE","ARKK","DIS","DISCA","SNAP","PYPL","GOOG","SQ",
+ "MELI","SHOP","SPCE","IBM","MSFT","COKE","SIG","UPS","VFF","CRM",
+  "AMC","SQQQ","TQQQ","EA","ISRG","NKE","MANU","NFLX","ROKU","TSLA","AXON","MCD", "ORCL","QCOM","TEAM","WMT","DAL","RIOT","M","MRNA"), sr = c(mean_return_by_stocks/fif_risk), weight = c(weight_fif))
+stockslimit <- 10
+evalFunc <- function(x) {
+  best_ten_sharpe <- x %*% stocks_backpack$sr
+  current_stocks_amount <- x %*% stocks_backpack$weight
+  if (current_stocks_amount > stockslimit) 
+    return(0) else return(best_ten_sharpe)
+}
+```
+```{r GA 50, include=FALSE}
+GA_pick <- ga("binary", fitness = evalFunc, nBits = 50,maxiter = 5000, popSize = 5000, run=500)
+```
+"ETHE","GBTC","ZM","SNAP","SQ","SPCE","TQQQ","TSLA","RIOT","MRNA" seems to be the decisions decided by the GA function.
+```{r Solution 50, echo=FALSE}
+top_ten=stocks_backpack[GA_pick@solution == 1, ]
+stocks_backpack[GA_pick@solution == 1, ]
+```
+Then we use the combination of this ten stocks to set up a GA function that can decide the weighting of different stocks.
+```{r Set up top ten, include=FALSE}
+myStocks_top_ten <- c("ETHE","GBTC","ZM","SNAP","SQ","SPCE","TQQQ","TSLA","RIOT","MRNA")
+getSymbols(myStocks_top_ten, src="yahoo", from="2020-01-01", to="2021-01-01")
+#get data into data frame and transfer to timeseries
+b = lapply(myStocks_top_ten, function(sym) dailyReturn(na.omit(getSymbols(sym, from="2020-01-01", to="2021-01-01", auto.assign=FALSE))))
+myRetData_top_ten = do.call(merge.xts,b)
+colnames(myRetData_top_ten) = myStocks_top_ten
+```
+Setting up GA function
+```{r Function top ten, echo=TRUE}
+sharpe_ten = function(x) {
+  return (mean(x*myRetData_top_ten)/sqrt(t(x) %*% cov(myRetData_top_ten)%*% x))
+}
+obj_ten = function(x) {
+  # We want the maximum Sharpe ratio, so we multiply it b -1 to fit an optimization problem
+  return (-sharpe_ten(x)+100*all_weight(x))
+}
+```
+```{r GA ten, include=FALSE}
+ga_res_top_ten = ga(type="real-valued", function(x){-obj_ten(x)}, lower = rep(0,ncol(myRetData_top_ten)), upper = rep(1,ncol(myRetData_top_ten)), maxiter = 50000, run=1500, monitor=TRUE,seed=1)
+```
+GBTC,SNAP,SQ,SPCE seems taking a significant portion in this case.
+```{r Show top ten, echo=FALSE}
+sol_ten = as.vector(summary(ga_res_top_ten)$solution)
+top_ten_port=cbind(names(myRetData_top_ten),sol_ten)
+top_ten_port
+```
+Set up the "future" data set.
+```{r Data set future ten, include=FALSE}
+myStocks_top_ten_future <- c("ETHE","GBTC","ZM","SNAP","SQ","SPCE","TQQQ","TSLA","RIOT","MRNA")
+getSymbols(myStocks_top_ten_future, src="yahoo", from="2021-01-01", to="2022-01-01")
+#get data into data frame and transfer to timeseries
+b = lapply(myStocks_top_ten_future, function(sym) dailyReturn(na.omit(getSymbols(sym, from="2021-01-01", to="2022-01-01", auto.assign=FALSE))))
+myRetData_top_ten_future = do.call(merge.xts,b)
+colnames(myRetData_top_ten_future) = myStocks_top_ten_future
+```
+Bring along the funcion used to decide the performance of the portfolio and fine tune it to match the new porfolio.
+```{r Ratio top ten fututre, echo=TRUE}
+allratio_ten = function(x)
+{
+  port_returns = mean(x * myRetData_top_ten)
+  port_risk <- sqrt(t(x) %*% (cov(myRetData_top_ten)%*%x))
+  sharpe_ratio = port_returns/port_risk
+  result = c("sharpe" = sharpe_ratio, "Porfolio Risk"=port_risk,"porfolio Return"=port_returns)
+  print(result)
+}
+allratio_ten_future = function(x)
+{
+  port_returns = mean(x * myRetData_top_ten_future)
+  port_risk <- sqrt(t(x) %*% (cov(myRetData_top_ten_future)%*%x))
+  sharpe_ratio = port_returns/port_risk
+  result = c("sharpe" = sharpe_ratio, "Porfolio Risk"=port_risk,"porfolio Return"=port_returns)
+  print(result)
+}
+top_ten_weight = data.frame(ga_res_top_ten@solution)
+```
+Compare the performance of in 2020-2021, the 10 stocks portfolio selected from 50 stocks seems to have significant better performance in Sharpe ratio compare to the 10 stocks picked manually in the part one, it may caused by the selection of the top 10 stocks portfolio is selected by performance of the share, while the original portfolio from part one is selected with human observation and instinct. And compare to all other random portfolio, it still remains the best performer in Sharpe Ratio.
+
+When bringing the portfolio to the future, even the top 10 out of 50 portfolio is not preforming the best, and listing one of the worst even it is still making profit. End up the prediction can not predict the actual movement of the stocks price, especially unpredicable rapid changes.
+```{r Ratio ten fututre, echo=TRUE}
+allratio_ten(as.numeric(top_ten_weight))
+allratio(as.numeric(best_weight_2020[1,]))
+allratio_ten(weight)
+allratio_ten(ran_weight1)
+allratio_ten(ran_weight2)
+allratio_ten(ran_weight3)
+#future
+allratio_ten_future(as.numeric(top_ten_weight))
+allratio_future(as.numeric(best_weight_2020[1,]))
+allratio_ten_future(weight)
+allratio_ten_future(ran_weight1)
+allratio_ten_future(ran_weight2)
+allratio_ten_future(ran_weight3)
