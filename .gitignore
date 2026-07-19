@@ -1,0 +1,32 @@
+# --- R ---
+.Rhistory
+.RData
+.Rapp.history
+.Rproj.user/
+*.Rproj
+.RDataTmp
+*.rds
+!data/cache/*.rds
+
+# --- knitr / rmarkdown ---
+*_cache/
+*_cache/**
+*_files/
+*_files/**
+output/*.html
+output/*.pdf
+!output/figures/*.png
+
+# --- Python / Jupyter (some notebooks may live alongside) ---
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# --- macOS / editor ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.vscode/
+.idea/
