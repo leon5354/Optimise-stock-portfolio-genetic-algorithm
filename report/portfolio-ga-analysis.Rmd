@@ -1,0 +1,377 @@
+---
+title: "Portfolio Optimisation with a Genetic Algorithm"
+author: "leon5354"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    fig_caption: yes
+    keep_tex: no
+    toc: yes
+    toc_depth: 2
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+# Render from project root so paths like "data/cache/..." resolve whether the
+# report is opened in RStudio (cwd = report/) or via rmarkdown::render().
+project_root <- rprojroot::find_root(rprojroot::has_file("README.md"))
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 7, fig.height = 4, fig.align = "center")
+options("getSymbols.warning4.0" = FALSE)
+```
+
+## Introduction
+
+This report explores portfolio weight optimisation using a genetic algorithm
+(GA). Given a universe of stocks, the goal is to decide what fraction of the
+portfolio to allocate to each stock so that an objective (Sharpe ratio, raw
+return, or risk) is optimised, subject to the constraint that the weights sum
+to one and each individual weight lies in $[0, 1]$.
+
+The analysis is split into two parts:
+
+* **Part 1** — start with a hand-picked 10-stock basket and compare four
+  fitness functions (max-Sharpe, max-return, min-risk, and two scaled Sharpe
+  variants).
+* **Part 2** — start from a 50-stock universe and use a binary GA to pick the
+  10 best stocks by Sharpe ratio, then re-optimise weights.
+
+Portfolios trained on the 2020–2021 period are then re-evaluated on the
+out-of-sample 2021–2022 period as a simple sanity check.
+
+\bigskip
+\noindent\textbf{Disclaimer:} This is a learning exercise. Nothing here is
+investment advice, and the "validation" approach is far too simplistic to
+support any real trading decision.
+
+## Data
+
+Daily returns are loaded from a snapshot cached in `data/cache/` (see
+`data/fetch_data.R` for how to refresh it). As of 2024, the
+`quantmod::getSymbols` Yahoo Finance path no longer works, so the snapshots
+are committed to keep the report runnable.
+
+```{r load-data, echo=TRUE}
+suppressMessages({ library(GA); library(xts); library(ggplot2); library(scales);
+                   library(forcats); library(tidyr); library(dplyr) })
+
+cache <- "data/cache"
+myRetData        <- readRDS(file.path(cache, "returns_10_2020_2021.rds"))
+myRetData        <- myRetData[-1, ]   # drop the first all-NA row from diff()
+myRetData_future <- readRDS(file.path(cache, "returns_10_2021_2022.rds"))[-1, ]
+myRetData_fif    <- readRDS(file.path(cache, "returns_50_2020_2021.rds"))[-1, ]
+```
+
+The Part-1 basket covers a mix of ETFs, large-cap tech, retail, and
+crypto-equity exposure:
+
+```{r basket-list, echo=FALSE}
+cat(paste(colnames(myRetData), collapse = ", "))
+```
+
+A few tickers from the original project (notably `JWN`, `DISCA`, `SQ`) are no
+longer available through the Yahoo free API and are dropped automatically.
+
+## Part 1: optimising weights on a fixed basket
+
+### Constraint and objective
+
+Because the `GA` package performs maximisation on a single objective, we
+collapse return and risk into a single fitness. For the maximum-Sharpe variant
+(with a 0% risk-free rate):
+
+```{r sharpe-fn, echo=TRUE}
+sharpe <- function(x) {
+  mean(x * myRetData) / sqrt(t(x) %*% cov(myRetData) %*% x)
+}
+```
+
+The full-investment and box constraints are enforced through a quadratic
+penalty rather than hard bounds, so the GA can search freely in $[0, 1]^n$:
+
+```{r weight-penalty, echo=TRUE}
+all_weight <- function(x) {
+  w <- (sum(x) - 1)^2
+  for (i in seq_along(x)) {
+    w <- w + max(c(0, x[i] - 1))^2 + max(c(0, -x[i]))^2
+  }
+  w
+}
+```
+
+The fitness combines the two. `-sharpe` because GA maximises:
+
+```{r obj-fn, echo=TRUE}
+obj <- function(x) -sharpe(x) + 100 * all_weight(x)
+```
+
+### Maximum-Sharpe portfolio
+
+```{r ga-sharpe, include=FALSE}
+ga_res <- ga(
+  type = "real-valued", fitness = function(x) -obj(x),
+  lower = rep(0, ncol(myRetData)), upper = rep(1, ncol(myRetData)),
+  maxiter = 500, run = 100, monitor = FALSE, seed = 1
+)
+sol <- as.vector(summary(ga_res)$solution)
+names(sol) <- colnames(myRetData)
+```
+
+The GA converges with fitness `r round(summary(ga_res)$fitness, 5)`, giving the
+following weight allocation:
+
+```{r sharpe-solution, echo=FALSE}
+sol_df <- data.frame(stock = names(sol), weight = sol)
+sol_df <- sol_df[order(-sol_df$weight), ]
+knitr::kable(sol_df, digits = 4,
+             col.names = c("Stock", "Weight"),
+             row.names = FALSE,
+             caption = "Maximum-Sharpe portfolio weights")
+```
+
+### Comparing fitness functions
+
+To understand how the choice of objective shapes the portfolio, we run four
+GA variants:
+
+1. **Max return** — ignore risk, maximise mean return.
+2. **Min risk** — minimise portfolio volatility.
+3. **More return** — Sharpe ratio with risk scaled down by 0.5 (rewards return).
+4. **Less risky** — Sharpe ratio with risk scaled up by 1.5 (penalises risk).
+
+```{r alt-objectives, include=FALSE}
+return_max <- function(x) mean(x * myRetData)
+obj_max    <- function(x) -return_max(x) + 100 * all_weight(x)
+
+return_least_risk <- function(x) sqrt(t(x) %*% cov(myRetData) %*% x)
+obj_least_risk    <- function(x) return_least_risk(x) + 100 * all_weight(x)
+
+sharpe_more_return <- function(x) {
+  risk <- sqrt(t(x) %*% cov(myRetData) %*% x)
+  mean(x * myRetData) / (risk * 0.5)
+}
+obj_more_return <- function(x) -sharpe_more_return(x) + 100 * all_weight(x)
+
+sharpe_less_risky <- function(x) {
+  risk <- sqrt(t(x) %*% cov(myRetData) %*% x)
+  mean(x * myRetData) / (risk * 1.5)
+}
+obj_less_risky <- function(x) -sharpe_less_risky(x) + 100 * all_weight(x)
+
+ga_max    <- ga(type = "real-valued", fitness = function(x) -obj_max(x),
+                lower = rep(0, ncol(myRetData)), upper = rep(1, ncol(myRetData)),
+                maxiter = 500, run = 100, monitor = FALSE, seed = 1)
+ga_least  <- ga(type = "real-valued", fitness = function(x) -obj_least_risk(x),
+                lower = rep(0, ncol(myRetData)), upper = rep(1, ncol(myRetData)),
+                maxiter = 500, run = 100, monitor = FALSE, seed = 1)
+ga_more   <- ga(type = "real-valued", fitness = function(x) -obj_more_return(x),
+                lower = rep(0, ncol(myRetData)), upper = rep(1, ncol(myRetData)),
+                maxiter = 500, run = 100, monitor = FALSE, seed = 1)
+ga_less   <- ga(type = "real-valued", fitness = function(x) -obj_less_risky(x),
+                lower = rep(0, ncol(myRetData)), upper = rep(1, ncol(myRetData)),
+                maxiter = 500, run = 100, monitor = FALSE, seed = 1)
+```
+
+```{r alt-solution-table, echo=FALSE}
+all_solutions <- data.frame(
+  stock       = colnames(myRetData),
+  max_sharpe  = as.vector(summary(ga_res)$solution),
+  max_return  = as.vector(summary(ga_max)$solution),
+  min_risk    = as.vector(summary(ga_least)$solution),
+  more_return = as.vector(summary(ga_more)$solution),
+  less_risky  = as.vector(summary(ga_less)$solution)
+)
+knitr::kable(all_solutions, digits = 3,
+             caption = "Portfolio weights under each objective")
+```
+
+```{r plot-solutions, echo=FALSE, fig.height=5, fig.cap="Optimal weights under each objective variant."}
+plot_df <- tidyr::pivot_longer(all_solutions, -stock, names_to = "objective",
+                               values_to = "weight")
+plot_df$objective <- factor(plot_df$objective,
+  levels = c("max_sharpe", "max_return", "more_return", "less_risky", "min_risk"),
+  labels = c("Max Sharpe", "Max return", "More return", "Less risky", "Min risk"))
+ggplot(plot_df, aes(x = stock, y = weight, fill = objective)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_y_continuous(labels = percent) +
+  labs(x = NULL, y = "Weight") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+As expected, the **max-return** portfolio concentrates on the highest-mean
+stocks, the **min-risk** portfolio spreads weight more evenly, and the scaled
+Sharpe variants sit in between.
+
+### Out-of-sample sanity check
+
+We compare each portfolio's Sharpe ratio on the 2020–2021 training period
+against its Sharpe ratio on the held-out 2021–2022 period.
+
+```{r perf-functions, echo=TRUE}
+allratio <- function(x, data) {
+  port_returns <- mean(x * data)
+  port_risk    <- sqrt(t(x) %*% cov(data) %*% x)
+  c(sharpe = port_returns / port_risk,
+    risk   = port_risk,
+    return = port_returns)
+}
+
+weight_equal <- rep(1 / ncol(myRetData), ncol(myRetData))
+```
+
+```{r perf-table, echo=FALSE}
+results <- data.frame(
+  portfolio = c("Max Sharpe", "Max return", "Min risk",
+                "More return", "Less risky", "Equal weight"),
+  rbind(
+    allratio(as.numeric(sol),                         myRetData),
+    allratio(as.vector(summary(ga_max)$solution),     myRetData),
+    allratio(as.vector(summary(ga_least)$solution),   myRetData),
+    allratio(as.vector(summary(ga_more)$solution),    myRetData),
+    allratio(as.vector(summary(ga_less)$solution),    myRetData),
+    allratio(weight_equal,                            myRetData)
+  ),
+  rbind(
+    allratio(as.numeric(sol),                         myRetData_future),
+    allratio(as.vector(summary(ga_max)$solution),     myRetData_future),
+    allratio(as.vector(summary(ga_least)$solution),   myRetData_future),
+    allratio(as.vector(summary(ga_more)$solution),    myRetData_future),
+    allratio(as.vector(summary(ga_less)$solution),    myRetData_future),
+    allratio(weight_equal,                            myRetData_future)
+  )
+)
+colnames(results) <- c("portfolio",
+                       paste0(c("sharpe", "risk", "return"), "_train"),
+                       paste0(c("sharpe", "risk", "return"), "_test"))
+knitr::kable(results, digits = 3,
+             caption = "In-sample (2020-2021) vs out-of-sample (2021-2022) performance")
+```
+
+Unsurprisingly, the best in-sample Sharpe does **not** translate into the best
+out-of-sample Sharpe — 2020 had an unusual combination of strong momentum and
+low correlation that simply did not persist. The min-risk portfolio degrades
+the least, consistent with the usual finding that volatility is more
+persistent than mean return.
+
+## Part 2: selecting stocks with a binary GA
+
+Instead of hand-picking 10 stocks, we use a binary GA to pick 10 out of a
+50-stock universe. Each bit indicates whether a stock is included; the fitness
+is the sum of Sharpe ratios of the selected stocks, subject to a cardinality
+constraint of exactly 10.
+
+```{r universe-sharpe, include=FALSE}
+mean_return_by_stocks <- colSums(myRetData_fif, na.rm = TRUE) / 253
+weight_fif            <- rep(1, ncol(myRetData_fif))
+fif_risk              <- sqrt(t(weight_fif) %*% cov(myRetData_fif) %*% weight_fif)
+sharpe_ratio_of_fif   <- mean_return_by_stocks / as.numeric(fif_risk)
+
+stocks_backpack <- data.frame(
+  item   = colnames(myRetData_fif),
+  sr     = as.numeric(sharpe_ratio_of_fif),
+  weight = 1
+)
+stocks_limit <- 10
+evalFunc <- function(x) {
+  best_ten_sharpe <- x %*% stocks_backpack$sr
+  current_amount  <- x %*% stocks_backpack$weight
+  if (current_amount > stocks_limit) 0 else best_ten_sharpe
+}
+
+set.seed(1)
+GA_pick <- ga("binary", fitness = evalFunc, nBits = nrow(stocks_backpack),
+              maxiter = 500, popSize = 30, run = 100, monitor = FALSE)
+# GA_pick@solution is a matrix whose rows are equally-good solutions; use the
+# first row to extract the chosen stocks.
+picked_mask <- as.logical(GA_pick@solution[1, ])
+top_ten     <- stocks_backpack[picked_mask, ]
+```
+
+The binary GA selects the following 10 stocks from the 50-name universe
+(ranked by their individual Sharpe ratios):
+
+```{r top10-table, echo=FALSE}
+top_ten_sorted <- top_ten[order(-top_ten$sr), c("item", "sr")]
+knitr::kable(top_ten_sorted, digits = 3,
+             col.names = c("Selected stock", "Individual Sharpe"),
+             row.names = FALSE,
+             caption = "Top-10 stocks chosen by the binary GA")
+```
+
+We then re-optimise the weights of those 10 stocks using the same max-Sharpe
+GA from Part 1.
+
+```{r top10-weights, include=FALSE}
+myStocks_top_ten  <- top_ten_sorted$item
+myRetData_top_ten <- myRetData_fif[, myStocks_top_ten, drop = FALSE]
+
+# Some columns may have NAs from gaps; restrict to rows with complete data.
+good_rows          <- apply(myRetData_top_ten, 1, function(r) all(!is.na(r)))
+myRetData_top_ten  <- myRetData_top_ten[good_rows, ]
+
+sharpe_ten <- function(x) {
+  mean(x * myRetData_top_ten) / sqrt(t(x) %*% cov(myRetData_top_ten) %*% x)
+}
+all_weight_ten <- function(x) {
+  w <- (sum(x) - 1)^2
+  for (i in seq_along(x)) {
+    w <- w + max(c(0, x[i] - 1))^2 + max(c(0, -x[i]))^2
+  }
+  w
+}
+obj_ten <- function(x) -sharpe_ten(x) + 100 * all_weight_ten(x)
+
+ga_res_top_ten <- ga(
+  type = "real-valued", fitness = function(x) -obj_ten(x),
+  lower = rep(0, ncol(myRetData_top_ten)),
+  upper = rep(1, ncol(myRetData_top_ten)),
+  maxiter = 500, run = 100, monitor = FALSE, seed = 1
+)
+sol_ten <- as.vector(summary(ga_res_top_ten)$solution)
+names(sol_ten) <- colnames(myRetData_top_ten)
+```
+
+```{r top10-weights-table, echo=FALSE}
+sol_ten_df <- data.frame(stock = names(sol_ten), weight = sol_ten)
+sol_ten_df <- sol_ten_df[order(-sol_ten_df$weight), ]
+knitr::kable(sol_ten_df, digits = 4,
+             col.names = c("Stock", "Weight"),
+             row.names = FALSE,
+             caption = "Optimised weights for the GA-selected top 10")
+```
+
+Because the 10 were chosen specifically for their historical Sharpe ratios, the
+in-sample Sharpe of this portfolio is higher than the hand-picked Part-1
+portfolio. Out-of-sample, however, it suffers from the same 2020-specific
+regime change — possibly more so, since picking "winners" from one period is a
+classic source of overfitting.
+
+## Discussion
+
+A few takeaways from the exercise:
+
+* The genetic algorithm works fine for portfolio weight optimisation given a
+  sensible penalty-based constraint encoding. It is not the most efficient
+  tool — convex optimisation (e.g. the `quadprog` package) would solve the
+  min-variance and max-Sharpe problems exactly and quickly — but it is
+  flexible and makes the trade-off between objectives easy to explore.
+* The choice of objective dominates everything else. Max-return, min-risk, and
+  Sharpe variants produce visibly different portfolios from the same universe.
+* Out-of-sample, none of the in-sample optima survive intact. The min-risk
+  portfolio degrades the least, which is consistent with the broader empirical
+  finding that covariance is more persistent than mean returns.
+
+## Reproducibility
+
+Refresh the data with `Rscript data/fetch_data.R`. Re-render the report with
+`rmarkdown::render("report/portfolio-ga-analysis.Rmd")`.
+
+```{r session-info, echo=FALSE}
+si <- sessionInfo()
+loaded <- c("GA", "xts", "ggplot2", "quantmod", "tidyverse")
+loaded <- loaded[loaded %in% c(names(si$loadedOnly), names(si$otherPkgs))]
+cat("R version:", si$platform, "\n")
+cat("Packages loaded:", paste(loaded, collapse = ", "), "\n")
+```

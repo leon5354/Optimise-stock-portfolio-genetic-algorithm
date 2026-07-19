@@ -1,0 +1,20 @@
+# R packages used in this project.
+# Captured 2026-07-19 on R 4.1.1.
+#
+# Install all at once:
+#   Rscript -e 'install.packages(c("GA","quantmod","tidyverse","ggplot2","scales","forcats","tidyr","httr","jsonlite","xts","rmarkdown","knitr","rprojroot"))'
+
+GA              3.2.2
+quantmod        0.4.18
+tidyverse       1.3.1
+dplyr           1.0.7
+ggplot2         3.3.5
+scales          1.1.1
+forcats         0.5.1
+tidyr           1.1.4
+httr            1.4.2
+jsonlite        1.7.2
+xts             0.12.1
+rmarkdown       2.11
+knitr           1.34
+rprojroot       2.0.2
